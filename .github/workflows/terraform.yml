@@ -1,0 +1,118 @@
+name: Terraform CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  terraform:
+    name: Terraform CI Pipeline
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: Env_module/Pre_prod
+
+    steps:
+      #-----------------------------------------
+      # Checkout Repository
+      #-----------------------------------------
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      #-----------------------------------------
+      # Setup Terraform
+      #-----------------------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Check Terraform Version
+        run: terraform version
+
+      #-----------------------------------------
+      # Terraform Formatting
+      #-----------------------------------------
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      #-----------------------------------------
+      # Azure Login (OIDC)
+      #-----------------------------------------
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      #-----------------------------------------
+      # Terraform Init
+      #-----------------------------------------
+      - name: Terraform Init
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: terraform init
+
+      #-----------------------------------------
+      # Setup TFLint
+      #-----------------------------------------
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: Run TFLint
+        run: tflint
+
+      #-----------------------------------------
+      # Terraform Validate
+      #-----------------------------------------
+      - name: Terraform Validate
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: terraform validate
+
+      #-----------------------------------------
+      # Checkov Security Scan
+      #-----------------------------------------
+      - name: Run Checkov Scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: Env_module/Pre_prod
+          framework: terraform
+          soft_fail: true
+
+      #-----------------------------------------
+      # Terraform Plan
+      #-----------------------------------------
+      - name: Terraform Plan
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: terraform plan -input=false -out=tfplan
+
+      #-----------------------------------------
+      # Terraform Apply
+      #-----------------------------------------
+      - name: Terraform Apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: terraform apply -auto-approve tfplan
