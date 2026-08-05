@@ -4,6 +4,10 @@
 # .tfstate files
 *.tfstate
 *.tfstate.*
+.gitleaks.toml
+gitleaks.sarif
+.terraform.lock.hcl
+terraform.tfstate.backup
 
 # Crash log files
 crash.log
@@ -13,7 +17,6 @@ crash.*.log
 # password, private keys, and other secrets. These should not be part of version
 # control as they are data points which are potentially sensitive and subject
 # to change depending on the environment.
-*.tfvars
 *.tfvars.json
 
 # Ignore override files as they are usually used to override resources locally and so
@@ -22,6 +25,27 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Variable files
+
+
+# Terraform lock file (optional)
+# .terraform.lock.hcl
+
+# Plan files
+*.tfplan
+
+# VS Code
+.vscode/
 
 # Ignore transient lock info files created by terraform apply
 .terraform.tfstate.lock.info
