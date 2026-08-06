@@ -30,3 +30,4 @@ module "virtual_machine" {
 }
 
 # client_secret = "my-secret"# client_secret = "my-secret"
+# demo pipeline for testing purpose only 
