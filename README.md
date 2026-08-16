@@ -676,7 +676,7 @@ The complete workflow can be summarized as:
 ```
 
 
-Security Model of the project
+Security Model
 
 The project follows several security principles:
 
@@ -691,6 +691,5 @@ The project follows several security principles:
 - Terraform validation before deployment
 - Remote Terraform state
 - Cost visibility before infrastructure deployment
-
 
 
