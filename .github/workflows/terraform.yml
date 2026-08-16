@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+
   pull_request:
     branches:
       - main
@@ -11,10 +12,18 @@ on:
 permissions:
   contents: read
   id-token: write
+  pull-requests: write
+  security-events: write
 
 jobs:
-  terraform:
-    name: Terraform CI Pipeline
+
+  # ============================================================
+  # DEVSECOPS + TERRAFORM CI
+  # Runs on Pull Requests and pushes to main
+  # ============================================================
+
+  terraform-ci:
+    name: DevSecOps + Terraform CI
     runs-on: ubuntu-latest
 
     defaults:
@@ -22,41 +31,78 @@ jobs:
         working-directory: Env_module/Pre_prod
 
     steps:
-      #-----------------------------------------
-      # Checkout Repository
-      #-----------------------------------------
+
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
+
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      #-----------------------------------------
-      # Setup Terraform
-      #-----------------------------------------
+      # ----------------------------------------------------------
+      # Terraform Setup
+      # ----------------------------------------------------------
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
       - name: Check Terraform Version
         run: terraform version
 
-      #-----------------------------------------
+      # ----------------------------------------------------------
       # Terraform Formatting
-      #-----------------------------------------
+      # ----------------------------------------------------------
+
       - name: Terraform Format Check
+        id: terraform_fmt
         run: terraform fmt -check -recursive
 
-      #-----------------------------------------
-      # Azure Login (OIDC)
-      #-----------------------------------------
-      - name: Azure Login
+      # ==========================================================
+      # DEVSECOPS - GITLEAKS
+      # ==========================================================
+
+      - name: Gitleaks Secret Scan
+        id: gitleaks
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ==========================================================
+      # DEVSECOPS - TRIVY
+      # ==========================================================
+
+      - name: Trivy Filesystem / IaC Scan
+        id: trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: 1
+
+      # ==========================================================
+      # AZURE LOGIN - OIDC
+      # ==========================================================
+
+      - name: Azure Login (OIDC)
+        id: azure_login
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      #-----------------------------------------
-      # Terraform Init
-      #-----------------------------------------
+      # ==========================================================
+      # TERRAFORM INIT
+      # ==========================================================
+
       - name: Terraform Init
+        id: terraform_init
         env:
           ARM_USE_OIDC: true
           ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -64,19 +110,23 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: terraform init
 
-      #-----------------------------------------
-      # Setup TFLint
-      #-----------------------------------------
+      # ==========================================================
+      # TFLINT
+      # ==========================================================
+
       - name: Setup TFLint
         uses: terraform-linters/setup-tflint@v4
 
       - name: Run TFLint
+        id: tflint
         run: tflint
 
-      #-----------------------------------------
-      # Terraform Validate
-      #-----------------------------------------
+      # ==========================================================
+      # TERRAFORM VALIDATE
+      # ==========================================================
+
       - name: Terraform Validate
+        id: terraform_validate
         env:
           ARM_USE_OIDC: true
           ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -84,20 +134,24 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: terraform validate
 
-      #-----------------------------------------
-      # Checkov Security Scan
-      #-----------------------------------------
-      - name: Run Checkov Scan
+      # ==========================================================
+      # DEVSECOPS - CHECKOV
+      # ==========================================================
+
+      - name: Checkov IaC Security Scan
+        id: checkov
         uses: bridgecrewio/checkov-action@v12
         with:
           directory: Env_module/Pre_prod
           framework: terraform
           soft_fail: true
 
-      #-----------------------------------------
-      # Terraform Plan
-      #-----------------------------------------
+      # ==========================================================
+      # TERRAFORM PLAN
+      # ==========================================================
+
       - name: Terraform Plan
+        id: terraform_plan
         env:
           ARM_USE_OIDC: true
           ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -105,14 +159,71 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: terraform plan -input=false -out=tfplan
 
-      #-----------------------------------------
-      # Terraform Apply
-      #-----------------------------------------
-      - name: Terraform Apply
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          ARM_USE_OIDC: true
-          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-        run: terraform apply -auto-approve tfplan
+      # ==========================================================
+      # UPLOAD TERRAFORM PLAN
+      # ==========================================================
+
+      - name: Upload Terraform Plan
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: Env_module/Pre_prod/tfplan
+          retention-days: 7
+
+      # ==========================================================
+      # PIPELINE SUMMARY
+      # ==========================================================
+
+      - name: DevSecOps Pipeline Summary
+        if: always()
+        run: |
+          echo "#  DevSecOps + Terraform Pipeline Summary" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Security Scans" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Tool | Purpose | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|---------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Gitleaks | Secret detection | ${{ steps.gitleaks.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trivy | Vulnerability / IaC / Secret scan | ${{ steps.trivy.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Checkov | Terraform security scan | ${{ steps.checkov.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Terraform Checks" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Terraform Format | ${{ steps.terraform_fmt.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| TFLint | ${{ steps.tflint.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Terraform Validate | ${{ steps.terraform_validate.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Terraform Plan | ${{ steps.terraform_plan.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ============================================================
+  # INFRACOST
+  # ============================================================
+
+  infracost:
+    name: Infracost - PR Cost Estimate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout PR Branch
+        uses: actions/checkout@v4
+        with:
+          path: head
+
+      - name: Checkout Base Branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          path: base
+
+      - name: Infracost Cost Diff
+        uses: infracost/actions/diff@v4
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+          base-path: base/Env_module/Pre_prod
+          head-path: head/Env_module/Pre_prod
