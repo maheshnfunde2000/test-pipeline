@@ -1,4 +1,4 @@
-name: Terraform CI
+name: Terraform CI/CD
 
 on:
   push:
@@ -86,6 +86,18 @@ jobs:
           exit-code: 1
 
       # ==========================================================
+      # DEVSECOPS - CHECKOV
+      # ==========================================================
+
+      - name: Checkov IaC Security Scan
+        id: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: Env_module/Pre_prod
+          framework: terraform
+          soft_fail: true
+
+      # ==========================================================
       # AZURE LOGIN - OIDC
       # ==========================================================
 
@@ -135,18 +147,6 @@ jobs:
         run: terraform validate
 
       # ==========================================================
-      # DEVSECOPS - CHECKOV
-      # ==========================================================
-
-      - name: Checkov IaC Security Scan
-        id: checkov
-        uses: bridgecrewio/checkov-action@v12
-        with:
-          directory: Env_module/Pre_prod
-          framework: terraform
-          soft_fail: true
-
-      # ==========================================================
       # TERRAFORM PLAN
       # ==========================================================
 
@@ -178,7 +178,7 @@ jobs:
       - name: DevSecOps Pipeline Summary
         if: always()
         run: |
-          echo "#  DevSecOps + Terraform Pipeline Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "# DevSecOps + Terraform Pipeline Summary" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "## Security Scans" >> "$GITHUB_STEP_SUMMARY"
@@ -199,21 +199,30 @@ jobs:
           echo "| Terraform Validate | ${{ steps.terraform_validate.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Terraform Plan | ${{ steps.terraform_plan.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
 
+
   # ============================================================
-  # INFRACOST
+  # INFRACOST - PULL REQUEST COST ANALYSIS
   # ============================================================
 
   infracost:
-    name: Infracost - PR Cost Estimate
+    name: Infracost - PR Cost Analysis
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
 
+      # ----------------------------------------------------------
+      # Checkout PR branch
+      # ----------------------------------------------------------
+
       - name: Checkout PR Branch
         uses: actions/checkout@v4
         with:
           path: head
+
+      # ----------------------------------------------------------
+      # Checkout base branch
+      # ----------------------------------------------------------
 
       - name: Checkout Base Branch
         uses: actions/checkout@v4
@@ -221,9 +230,164 @@ jobs:
           ref: ${{ github.event.pull_request.base.ref }}
           path: base
 
+      # ----------------------------------------------------------
+      # Infracost PR Diff
+      # ----------------------------------------------------------
+
       - name: Infracost Cost Diff
         uses: infracost/actions/diff@v4
         with:
           api-key: ${{ secrets.INFRACOST_API_KEY }}
           base-path: base/Env_module/Pre_prod
           head-path: head/Env_module/Pre_prod
+
+      # ----------------------------------------------------------
+      # Setup Infracost CLI
+      # ----------------------------------------------------------
+
+      - name: Setup Infracost CLI
+        uses: infracost/actions/setup@v3
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+
+      # ----------------------------------------------------------
+      # Generate Detailed Cost Breakdown
+      # ----------------------------------------------------------
+
+      - name: Generate Infracost Breakdown
+        working-directory: head/Env_module/Pre_prod
+        env:
+          INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
+        run: |
+          infracost breakdown \
+            --path=. \
+            --format=json \
+            --out-file=/tmp/infracost.json
+
+      # ----------------------------------------------------------
+      # Generate Resource Cost Summary
+      # ----------------------------------------------------------
+
+      - name: Generate Resource Cost Summary
+        run: |
+          echo "# Infracost Resource Cost Breakdown" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "## Estimated Monthly Cost" >> "$GITHUB_STEP_SUMMARY"
+
+          TOTAL=$(jq -r '.totalMonthlyCost // "0"' /tmp/infracost.json)
+
+          echo "**Total Monthly Cost: \$${TOTAL}**" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "## Resource Breakdown" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Resource | Monthly Cost |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|--------------|" >> "$GITHUB_STEP_SUMMARY"
+
+          jq -r '
+            .projects[]
+            .breakdown.resources[]
+            | [
+                .name,
+                (.monthlyCost // "0")
+              ]
+            | @tsv
+          ' /tmp/infracost.json |
+          while IFS=$'\t' read -r RESOURCE COST
+          do
+            echo "| \`$RESOURCE\` | \$$COST |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+
+  # ============================================================
+  # INFRACOST - MAIN BRANCH BASELINE
+  # ============================================================
+
+  infracost-scan:
+    name: Infracost - Update Main Baseline
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Infracost Scan
+        uses: infracost/actions/scan@v4
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+          path: Env_module/Pre_prod
+
+
+  # ============================================================
+  # TERRAFORM APPLY
+  # Runs ONLY after successful CI on main
+  # ============================================================
+
+  terraform-apply:
+    name: Terraform Apply
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - terraform-ci
+      - infracost-scan
+
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: Env_module/Pre_prod
+
+    steps:
+
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------
+      # Terraform Setup
+      # ----------------------------------------------------------
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # ----------------------------------------------------------
+      # Azure OIDC Login
+      # ----------------------------------------------------------
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ----------------------------------------------------------
+      # Terraform Init
+      # ----------------------------------------------------------
+
+      - name: Terraform Init
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: terraform init
+
+      # ----------------------------------------------------------
+      # Terraform Apply
+      # ----------------------------------------------------------
+
+      - name: Terraform Apply
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: terraform apply -auto-approve
