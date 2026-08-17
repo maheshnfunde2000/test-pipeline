@@ -58,7 +58,7 @@ vms = {
     nic_vnet_name   = "rajeev-vnet"
     nic_pip_name    = "pip-frontend-vm"
     vm_name         = "frontend-vm"
-    vm_size         = "Standard_D2s_v3"
+    vm_size         = "Standard_B2as_v2"
     admin_username  = "devopsadmin"
     admin_password  = "DevOps@123"
     image_publisher = "Canonical"
@@ -75,12 +75,13 @@ vms = {
     nic_vnet_name   = "rajeev-vnet"
     nic_pip_name    = "pip-backend-vm"
     vm_name         = "backend-vm"
-    vm_size         = "Standard_D2s_v3"
+    vm_size         = "Standard_B2as_v2"
     admin_username  = "devopsadmin"
     admin_password  = "DevOps@123"
     image_publisher = "Canonical"
     image_offer     = "0001-com-ubuntu-server-jammy"
     image_sku       = "22_04-lts"
     image_version   = "latest"
+
   }
 }
